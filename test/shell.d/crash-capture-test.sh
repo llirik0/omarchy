@@ -151,6 +151,16 @@ run_watch
   fail "the crash watcher announces a coredump caused by its own service and sustains the loop"
 pass "a crash caused by the watcher service is not announced"
 
+# Excluded by the service it ran in, not by name: the shell crashing for real is
+# exactly the crash worth announcing, and one after the probe's must still reach it.
+crash_entry quickshell /usr/bin/quickshell
+run_watch
+announced quickshell ||
+  fail "a quickshell crash outside the watcher's service is dropped along with the watcher's own"
+pass "a quickshell crash outside the watcher's service still announces itself"
+
+reset_entries
+crash_entry hyprland /usr/bin/hyprland
 mute hyprland on
 run_watch
 ! announced hyprland ||
