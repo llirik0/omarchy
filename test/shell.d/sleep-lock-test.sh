@@ -64,7 +64,11 @@ mock_logind_window() {
   cat >"$mock_bin/busctl" <<SH
 #!/bin/bash
 
-printf 't %s\n' $1
+if [[ \$* == *GetConnectionUnixProcessID* ]]; then
+  printf 'u %s\n' "\${NOTIFICATION_SERVER_PID:-700}"
+else
+  printf 't %s\n' $1
+fi
 SH
   chmod +x "$mock_bin/busctl"
 }
@@ -304,12 +308,12 @@ notification_id_file="$state_dir/omarchy/sleep-lock-notification-id"
 [[ ${notifications[1]} == *"-r 41"* && ${notifications[1]} == *"-p"* ]] ||
   fail "a repeated unsecured warning replaces the previous notification" \
     "notification: ${notifications[1]}"
-[[ -f $notification_id_file && $(< "$notification_id_file") == 41 ]] ||
+[[ -f $notification_id_file && $(< "$notification_id_file") == *"-700 41" ]] ||
   fail "sleep lock persists the notification id returned by the sender"
 pass "repeated unsecured warnings replace the previous notification"
 
-# A replacement id is only valid for one notification-server generation. If a
-# restarted server assigns a fresh id, save that returned id and use it next.
+# A dismissed card's id is gone, so the server assigns a fresh one. Save that
+# returned id and use it next.
 export RETURN_NOTIFICATION_ID=82
 run_sleep_lock 4000
 unset RETURN_NOTIFICATION_ID
@@ -322,9 +326,32 @@ mapfile -t notifications <"$notify_log"
 [[ ${notifications[3]} == *"-r 82"* ]] ||
   fail "sleep lock reuses the notification id reassigned by the server" \
     "notification: ${notifications[3]}"
-[[ $(< "$notification_id_file") == 82 ]] ||
+[[ $(< "$notification_id_file") == *"-700 82" ]] ||
   fail "sleep lock persists a reassigned notification id"
 pass "a reassigned notification id is persisted and reused"
+
+# A restarted server numbers its ids from 1 again and replaces whatever live
+# notification holds the saved id, so an id from another server is never offered.
+export NOTIFICATION_SERVER_PID=701
+run_sleep_lock 4000
+unset NOTIFICATION_SERVER_PID
+mapfile -t notifications <"$notify_log"
+
+[[ ${notifications[4]} == *"-r 0"* ]] ||
+  fail "a restarted notification server is not handed the old server's id" \
+    "notification: ${notifications[4]}"
+[[ $(< "$notification_id_file") == *"-701 41" ]] ||
+  fail "sleep lock saves the id with the server that issued it"
+pass "an id is only reused with the notification server that issued it"
+
+printf '%s-700 99999999999\n' "$(</proc/sys/kernel/random/boot_id)" >"$notification_id_file"
+run_sleep_lock 4000
+mapfile -t notifications <"$notify_log"
+
+[[ ${notifications[5]} == *"-r 0"* ]] ||
+  fail "a corrupt saved id is not offered for replacement" \
+    "notification: ${notifications[5]}"
+pass "a corrupt saved id falls back to a fresh notification"
 
 # Concurrent failures must serialize the whole replace-id transaction. Give each
 # new notification a distinct id and delay its reply so an unlocked read/send/
@@ -401,7 +428,7 @@ done
 [[ ${notifications[*]} == *"-r 41"* ]] ||
   fail "the serialized warning replaces the first concurrent notification" \
     "notifications: $(< "$notify_log")"
-[[ -f $notification_id_file && $(< "$notification_id_file") == 41 ]] ||
+[[ -f $notification_id_file && $(< "$notification_id_file") == *"-700 41" ]] ||
   fail "concurrent warnings persist the sender's replacement id"
 pass "concurrent unsecured warnings reuse one notification"
 

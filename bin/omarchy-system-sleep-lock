@@ -94,11 +94,25 @@ sync_clamshell() {
     omarchy-hyprland-monitor-clamshell >/dev/null 2>&1 || true
 }
 
+# Each notification server numbers its ids from 1 and lets any sender replace
+# any live id, so a saved id is only safe to reuse with the server that issued it.
+notification_server() {
+  local pid
+  pid=$(timeout --kill-after=0.1s 0.5s busctl --user call \
+    org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus GetConnectionUnixProcessID s \
+    org.freedesktop.Notifications 2>/dev/null) || return 1
+  pid=${pid##* }
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  printf '%s-%s\n' "$(</proc/sys/kernel/random/boot_id)" "$pid"
+}
+
 # logind suspends whether or not this wait succeeded, so a failure here means
 # the machine slept with the session exposed. The notification is the only way
 # anyone finds out, and it lands on the screen they unlock into.
 report_unsecured() {
   local replaces_id=0 returned_id notification_lock_fd notification_id_tmp
+  local server saved_server saved_id
 
   printf 'omarchy-system-sleep-lock: suspending without a secure lock (%s)\n' \
     "$1" >&2
@@ -106,18 +120,21 @@ report_unsecured() {
   if mkdir -p "$notification_state_dir" 2>/dev/null &&
     exec {notification_lock_fd}>"$notification_lock_file" 2>/dev/null &&
     flock --wait "$notification_lock_timeout" "$notification_lock_fd" 2>/dev/null; then
-    if [[ -r $notification_id_file ]]; then
-      replaces_id=$(<"$notification_id_file")
-      [[ $replaces_id =~ ^[0-9]+$ ]] || replaces_id=0
+    server=$(notification_server) || server=""
+    # A corrupt id too long for Notify's uint32 would fail every send after it.
+    if [[ -n $server && -r $notification_id_file ]] &&
+      read -r saved_server saved_id <"$notification_id_file" &&
+      [[ $saved_server == "$server" && $saved_id =~ ^[0-9]{1,9}$ ]]; then
+      replaces_id=$saved_id
     fi
 
     if returned_id=$(omarchy-notification-send -u critical -g 󰌾 \
       -r "$replaces_id" -p \
       "Screen did not lock before suspend" \
       "The session was left unlocked ($1)." 2>/dev/null); then
-      if [[ $returned_id =~ ^[0-9]+$ ]] &&
+      if [[ -n $server && $returned_id =~ ^[0-9]+$ ]] &&
         notification_id_tmp=$(mktemp "$notification_id_file.XXXXXX" 2>/dev/null); then
-        if ! printf '%s\n' "$returned_id" >"$notification_id_tmp" 2>/dev/null ||
+        if ! printf '%s %s\n' "$server" "$returned_id" >"$notification_id_tmp" 2>/dev/null ||
           ! mv -f "$notification_id_tmp" "$notification_id_file" 2>/dev/null; then
           rm -f "$notification_id_tmp"
         fi
