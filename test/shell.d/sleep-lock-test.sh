@@ -510,6 +510,30 @@ grep -qF "suspending without a secure lock" "$journal_log" ||
     "journal: $(< "$journal_log")"
 pass "sleep lock records the unlocked suspend in the journal"
 
+# Only a timeout means another reporter is sending the warning. A state
+# directory that cannot be locked at all must still warn.
+setup_scenario notification_lock_error
+cat >"$mock_bin/omarchy-shell" <<'SH'
+#!/bin/bash
+
+printf 'shell %s\n' "$*" >>"$CALL_LOG"
+[[ $* == "lock lock" ]] && printf 'missing-pam\n'
+exit 0
+SH
+chmod +x "$mock_bin/omarchy-shell"
+mock_clamshell
+printf '#!/bin/bash\n\nexit 64\n' >"$mock_bin/flock"
+chmod +x "$mock_bin/flock"
+
+run_sleep_lock 4000
+mapfile -t notifications <"$notify_log"
+
+(( ${#notifications[@]} == 1 )) &&
+  [[ ${notifications[0]} == *"did not lock before suspend"* ]] ||
+  fail "a state lock that errors still sends the unsecured warning" \
+    "notifications: $(< "$notify_log")"
+pass "a state lock that errors still sends the unsecured warning"
+
 # A never-securing shell is the scenario that runs out the whole budget, so it
 # is also the one that shows which budget was derived.
 never_secures() {

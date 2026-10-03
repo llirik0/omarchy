@@ -189,6 +189,7 @@ Item {
     }
 
     persistPopupFile(snapshot)
+    if (!popupsRestored) ownPopupFiles[NotificationLogic.popupFileName(snapshot)] = true
     watchForUpdates(notification, snapshot)
     // Qt.callLater avoids "QV4::Object::insertMember" crashes when a
     // Repeater is mid-incubation while we mutate its model.
@@ -490,6 +491,10 @@ Item {
   // replay, these rows still own their popup files and images, so an identical
   // fresh notification may safely supersede them after a shell restart.
   property var startupRestoredPopups: ({})
+  // Files this shell wrote before its startup restore settled. The restore can
+  // read them back, but their rows are live or archived, not a previous shell's.
+  property var ownPopupFiles: ({})
+  property bool popupsRestored: false
 
   // Entries are either { command, done } for a file job or { read: true } for
   // a replay's directory read. Queueing the read rather than running it beside
@@ -786,6 +791,7 @@ Item {
     var live = []
     for (var i = 0; i < entries.length; i++) {
       var entry = entries[i]
+      if (ownPopupFiles[NotificationLogic.popupFileName(entry)]) continue
       var duration = durationFor(entry.urgency, entry.expireTimeout)
       if (NotificationLogic.popupExpired(entry, duration, now)) {
         // It would have expired on screen had the shell kept running, so it
@@ -807,7 +813,10 @@ Item {
       }
       live.push(entry)
     }
-    if (live.length === 0) return
+    if (live.length === 0) {
+      settleRestore()
+      return
+    }
 
     Qt.callLater(function() {
       for (var j = 0; j < live.length; j++) {
@@ -847,7 +856,13 @@ Item {
         service.startupRestoredPopups[fileName] = true
         popupModel.append(restored)
       }
+      service.settleRestore()
     })
+  }
+
+  function settleRestore() {
+    popupsRestored = true
+    ownPopupFiles = ({})
   }
 
   // ---------------------------------------------------- settings persistence
