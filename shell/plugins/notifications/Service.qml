@@ -326,13 +326,27 @@ Item {
   // same way a replaces_id update would: the newest copy stays, its timer
   // starts fresh, and history keeps a single entry. The superseded copy is
   // dismissed at the server so its sender stops holding it open.
-  // Only toasts with a live notification behind them qualify: a restored or
-  // replayed row shares its images with an entry already in history, and
-  // deleting its file here would leave that entry pointing at nothing.
+  // Live toasts qualify, as do startup-restored rows that still own their
+  // popup files. History-replayed rows do not: deleting one could remove image
+  // copies still referenced by the archived entry it came from.
   function removeDuplicatePopups(snapshot) {
     for (var i = popupModel.count - 1; i >= 0; i--) {
       var row = popupModel.get(i)
-      if (!NotificationLogic.isDuplicatePopup(row, snapshot) || isRestoredRow(row)) continue
+      var fileName = NotificationLogic.popupFileName(row)
+      if (isRestoredRow(row)) {
+        // A startup-restored warning may be followed by the same warning from
+        // its sender after the shell restarts. It has no live server object to
+        // dismiss, but it still owns its file and image, unlike history replay.
+        var plan = NotificationLogic.startupRestoredDuplicatePlan(
+          row, snapshot, startupRestoredPopups[fileName])
+        if (!plan.removeRow) continue
+        if (plan.deleteFile) deletePopupFileFor(row)
+        delete restoredPopups[fileName]
+        delete startupRestoredPopups[fileName]
+        popupModel.remove(i)
+        continue
+      }
+      if (!NotificationLogic.isDuplicatePopup(row, snapshot)) continue
       var ref = liveRefs[row.originalId]
       if (!ref) continue
       deletePopupFileFor(row)
@@ -368,7 +382,11 @@ Item {
     // placeholder) archive to nothing, which the move tolerates.
     if (entry) {
       archivePopupFileFor(entry)
-      if (restored) delete restoredPopups[NotificationLogic.popupFileName(entry)]
+      if (restored) {
+        var fileName = NotificationLogic.popupFileName(entry)
+        delete restoredPopups[fileName]
+        delete startupRestoredPopups[fileName]
+      }
     }
     popupModel.remove(index)
     if (ref) {
@@ -463,6 +481,10 @@ Item {
   // generations. The replaces_id handling and liveRefs lookups must not
   // match these rows against fresh notifications.
   property var restoredPopups: ({})
+  // The subset restored from popupStateDir at startup. Unlike a history
+  // replay, these rows still own their popup files and images, so an identical
+  // fresh notification may safely supersede them after a shell restart.
+  property var startupRestoredPopups: ({})
 
   // Entries are either { command, done } for a file job or { read: true } for
   // a replay's directory read. Queueing the read rather than running it beside
@@ -788,24 +810,36 @@ Item {
         // A notification received while the restore was reading the dir can
         // already occupy this originalId with the same timestamp — then it
         // IS this entry, live with its own file, and must be left alone. A
-        // different timestamp is indistinguishable between a genuine
-        // cross-restart replaces_id and a new-generation id coincidence, so
-        // show both: a briefly duplicated toast beats silently dropping a
-        // restored critical alert.
+        // content-identical fresh row supersedes the persisted copy. Any other
+        // same-id row is a new-generation coincidence, so keep both rather
+        // than silently dropping a restored critical alert.
         var duplicate = false
+        var superseded = false
         for (var k = 0; k < popupModel.count; k++) {
           var row = popupModel.get(k)
-          if (row && row.originalId === restored.originalId && row.timestamp === restored.timestamp) {
+          var plan = NotificationLogic.restoredPopupPlan(
+            row, restored, isRestoredRow(row))
+          if (plan.disposition === "same") {
             duplicate = true
             break
           }
+          // A fresh copy can arrive while restorePopupsProc is reading the
+          // directory. In that ordering it already supersedes the persisted
+          // copy, so discard the old file instead of appending a duplicate.
+          if (plan.disposition === "superseded") {
+            if (plan.deleteFile) deletePopupFileFor(restored)
+            superseded = true
+            break
+          }
         }
-        if (duplicate) continue
+        if (duplicate || superseded) continue
         // Append (entries are newest-first) so restored toasts stack in
         // their original order below anything that just arrived. Restored
         // popups have no liveRefs entry — the server object died with the
         // old shell — so dismissal and action fallbacks degrade gracefully.
-        service.restoredPopups[NotificationLogic.popupFileName(restored)] = true
+        var fileName = NotificationLogic.popupFileName(restored)
+        service.restoredPopups[fileName] = true
+        service.startupRestoredPopups[fileName] = true
         popupModel.append(restored)
       }
     })

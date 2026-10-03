@@ -370,6 +370,60 @@ assert(
   'notifications leave a same-id update to the replaces_id path'
 )
 assert(
+  notifications.hasDuplicatePopupContent(heyReminder, heyReminder),
+  'notifications compare duplicate content independently of server-generation ids'
+)
+assertDeepEqual(
+  notifications.startupRestoredDuplicatePlan(
+    Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
+    Object.assign({}, heyReminder, { originalId: 21, timestamp: 200 }),
+    true
+  ),
+  { removeRow: true, deleteFile: true },
+  'notifications remove an identical startup-restored popup and its owned file'
+)
+assertDeepEqual(
+  notifications.startupRestoredDuplicatePlan(
+    Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
+    Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
+    true
+  ),
+  { removeRow: true, deleteFile: false },
+  'notifications preserve the fresh file when it shares the restored popup identity'
+)
+assertDeepEqual(
+  notifications.startupRestoredDuplicatePlan(heyReminder, heyReminder, false),
+  { removeRow: false, deleteFile: false },
+  'notifications never remove an identical history replay popup or its files'
+)
+assertDeepEqual(
+  notifications.restoredPopupPlan(
+    Object.assign({}, heyReminder, { originalId: 21, timestamp: 200 }),
+    Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
+    false
+  ),
+  { disposition: 'superseded', deleteFile: true, append: false },
+  'notifications discard an old restored popup and its file when its fresh copy arrived first'
+)
+assertDeepEqual(
+  notifications.restoredPopupPlan(
+    Object.assign({}, heyReminder, { originalId: 21, timestamp: 200 }),
+    Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
+    true
+  ),
+  { disposition: 'keep', deleteFile: false, append: true },
+  'notifications preserve an identical history replay popup and its files'
+)
+assertDeepEqual(
+  notifications.restoredPopupPlan(
+    Object.assign({}, heyReminder, { timestamp: 100 }),
+    Object.assign({}, heyReminder, { timestamp: 100 }),
+    false
+  ),
+  { disposition: 'same', deleteFile: false, append: false },
+  'notifications recognize a restored file already represented by a live row and preserve it'
+)
+assert(
   !notifications.isDuplicatePopup(heyReminder, Object.assign({}, heyReminder, { originalId: 21, body: 'Today, 2:00 PM' })),
   'notifications keep toasts whose body differs'
 )
@@ -676,8 +730,16 @@ assert(
   'notifications service replaces an on-screen duplicate before showing the new copy'
 )
 assert(
-  /isDuplicatePopup\(row, snapshot\) \|\| isRestoredRow\(row\)\) continue\n\s*var ref = liveRefs\[row\.originalId\]\n\s*if \(!ref\) continue/.test(serviceQml),
-  'notifications service only collapses duplicates of toasts still backed by a live notification'
+  /startupRestoredDuplicatePlan\([\s\S]{0,100}?startupRestoredPopups\[fileName\]\)\n\s*if \(!plan\.removeRow\) continue\n\s*if \(plan\.deleteFile\) deletePopupFileFor\(row\)\n\s*delete restoredPopups\[fileName\]\n\s*delete startupRestoredPopups\[fileName\]\n\s*popupModel\.remove\(i\)/.test(serviceQml),
+  'notifications service lets a fresh warning supersede an identical startup-restored warning'
+)
+assert(
+  /restoredPopupPlan\([\s\S]*?plan\.disposition === "superseded"[\s\S]*?plan\.deleteFile\) deletePopupFileFor\(restored\)[\s\S]*?if \(duplicate \|\| superseded\) continue/.test(serviceQml),
+  'notifications restore discards an old warning when its fresh copy arrived first'
+)
+assert(
+  /if \(!NotificationLogic\.isDuplicatePopup\(row, snapshot\)\) continue\n\s*var ref = liveRefs\[row\.originalId\]\n\s*if \(!ref\) continue/.test(serviceQml),
+  'notifications service collapses ordinary duplicates only when backed by a live notification'
 )
 assert(
   /if \(signal && typeof signal\.connect === "function"\) signal\.connect\(refresh\)/.test(serviceQml),

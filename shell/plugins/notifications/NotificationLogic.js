@@ -231,13 +231,34 @@ function popupRowChanged(row, updated) {
 // opens a different file.
 var DUPLICATE_ROLES = ["app", "summary", "body", "image", "execArgv"]
 
-function isDuplicatePopup(row, snapshot) {
-  if (!row || !snapshot || row.originalId === snapshot.originalId) return false
+function hasDuplicatePopupContent(row, snapshot) {
+  if (!row || !snapshot) return false
   for (var i = 0; i < DUPLICATE_ROLES.length; i++) {
     var role = DUPLICATE_ROLES[i]
     if ((row[role] || "") !== (snapshot[role] || "")) return false
   }
   return true
+}
+
+function isDuplicatePopup(row, snapshot) {
+  return !!row && !!snapshot && row.originalId !== snapshot.originalId &&
+    hasDuplicatePopupContent(row, snapshot)
+}
+
+function startupRestoredDuplicatePlan(row, snapshot, startupRestored) {
+  var removeRow = !!startupRestored && hasDuplicatePopupContent(row, snapshot)
+  return {
+    removeRow: removeRow,
+    deleteFile: removeRow && popupFileName(row) !== popupFileName(snapshot)
+  }
+}
+
+function restoredPopupPlan(row, restored, rowIsRestored) {
+  if (row && restored && row.originalId === restored.originalId && row.timestamp === restored.timestamp)
+    return { disposition: "same", deleteFile: false, append: false }
+  if (row && restored && !rowIsRestored && hasDuplicatePopupContent(row, restored))
+    return { disposition: "superseded", deleteFile: true, append: false }
+  return { disposition: "keep", deleteFile: false, append: true }
 }
 
 // A client updating a notification through replaces_id keeps the identity of
@@ -479,7 +500,10 @@ if (typeof module !== "undefined") {
     snapshotOf: snapshotOf,
     popupRoles: popupRoles,
     popupRowChanged: popupRowChanged,
+    hasDuplicatePopupContent: hasDuplicatePopupContent,
     isDuplicatePopup: isDuplicatePopup,
+    startupRestoredDuplicatePlan: startupRestoredDuplicatePlan,
+    restoredPopupPlan: restoredPopupPlan,
     replacementSnapshot: replacementSnapshot,
     historyEntry: historyEntry,
     parseSettings: parseSettings,
