@@ -133,7 +133,7 @@ report_unsecured() {
 
   if mkdir -p "$notification_state_dir" 2>/dev/null &&
     exec {notification_lock_fd}>"$notification_lock_file" 2>/dev/null; then
-    if flock --wait "$notification_lock_timeout" "$notification_lock_fd" 2>/dev/null; then
+    if flock -E 75 --wait "$notification_lock_timeout" "$notification_lock_fd" 2>/dev/null; then
       server=$(notification_server) || server=""
       # A corrupt id too long for Notify's uint32 would fail every send after it.
       if [[ -n $server && -r $notification_id_file ]] &&
@@ -154,6 +154,12 @@ report_unsecured() {
           fi
         fi
       fi
+    # Only a timeout means another reporter holds the lock and is sending this
+    # warning; a filesystem that cannot lock must still get one.
+    elif (( $? != 75 )); then
+      omarchy-notification-send -u critical -g 󰌾 \
+        "Screen did not lock before suspend" \
+        "The session was left unlocked ($1)." >/dev/null 2>&1 || true
     fi
     exec {notification_lock_fd}>&-
   else

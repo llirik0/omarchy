@@ -738,6 +738,11 @@ assert(
   'notifications restore discards an old warning when its fresh copy arrived first'
 )
 assert(
+  /persistPopupFile\(snapshot\)\n\s*if \(!popupsRestored\) ownPopupFiles\[NotificationLogic\.popupFileName\(snapshot\)\] = true/.test(serviceQml) &&
+    /var entry = entries\[i\]\n\s*if \(ownPopupFiles\[NotificationLogic\.popupFileName\(entry\)\]\) continue\n\s*var duration/.test(serviceQml),
+  'notifications restore never treats a file this shell wrote as a previous shell\'s popup'
+)
+assert(
   /if \(!NotificationLogic\.isDuplicatePopup\(row, snapshot\)\) continue\n\s*var ref = liveRefs\[row\.originalId\]\n\s*if \(!ref\) continue/.test(serviceQml),
   'notifications service collapses ordinary duplicates only when backed by a live notification'
 )
