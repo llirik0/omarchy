@@ -15,7 +15,7 @@ poll_interval=0.1
 notification_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 notification_id_file="$notification_state_dir/sleep-lock-notification-id"
 notification_lock_file="$notification_state_dir/sleep-lock-notification.lock"
-notification_lock_timeout=0.75
+notification_lock_timeout=0.7
 notification_proc_root=${OMARCHY_PROC_ROOT:-/proc}
 
 # logind decides how long a delay inhibitor may hold the machine, and the
@@ -40,9 +40,15 @@ derive_budget_ms() {
   (( window < budget_cap_ms )) && echo "$window" || echo "$budget_cap_ms"
 }
 
-budget_ms=${1:-$(derive_budget_ms)}
-if [[ ! $budget_ms =~ ^[0-9]+$ ]] || (( budget_ms < 1 || budget_ms > budget_cap_ms )); then
-  budget_ms=$(derive_budget_ms)
+report_mode_reason=""
+if [[ ${1:-} == --report-unsecured ]]; then
+  report_mode_reason=${2:-unknown}
+  budget_ms=1
+else
+  budget_ms=${1:-$(derive_budget_ms)}
+  if [[ ! $budget_ms =~ ^[0-9]+$ ]] || (( budget_ms < 1 || budget_ms > budget_cap_ms )); then
+    budget_ms=$(derive_budget_ms)
+  fi
 fi
 
 # EPOCHREALTIME renders with the locale's decimal separator, so drop every
@@ -98,13 +104,22 @@ sync_clamshell() {
 # Each notification server numbers its ids from 1 and lets any sender replace
 # any live id, so a saved id is only safe to reuse with the server that issued it.
 notification_server() {
-  local pid stat start_time
+  local owner pid stat start_time
   local -a stat_fields
+
+  owner=$(timeout --kill-after=0.1s 0.5s busctl --user call \
+    org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus GetNameOwner s \
+    org.freedesktop.Notifications 2>/dev/null) || return 1
+  owner=${owner#* }
+  owner=${owner#\"}
+  owner=${owner%\"}
+  [[ $owner =~ ^:[0-9]+(\.[0-9]+)+$ ]] || return 1
 
   pid=$(timeout --kill-after=0.1s 0.5s busctl --user call \
     org.freedesktop.DBus /org/freedesktop/DBus \
     org.freedesktop.DBus GetConnectionUnixProcessID s \
-    org.freedesktop.Notifications 2>/dev/null) || return 1
+    "$owner" 2>/dev/null) || return 1
   pid=${pid##* }
   [[ $pid =~ ^[0-9]+$ ]] || return 1
 
@@ -117,32 +132,36 @@ notification_server() {
   start_time=${stat_fields[19]}
   [[ $start_time =~ ^[0-9]+$ ]] || return 1
 
-  printf '%s-%s-%s\n' \
+  printf '%s %s-%s-%s\n' "$owner" \
     "$(<"$notification_proc_root/sys/kernel/random/boot_id")" "$pid" "$start_time"
 }
 
 # logind suspends whether or not this wait succeeded, so a failure here means
 # the machine slept with the session exposed. The notification is the only way
 # anyone finds out, and it lands on the screen they unlock into.
-report_unsecured() {
+report_unsecured_now() {
   local replaces_id=0 returned_id notification_lock_fd notification_id_tmp
-  local server saved_server saved_id
-
-  printf 'omarchy-system-sleep-lock: suspending without a secure lock (%s)\n' \
-    "$1" >&2
+  local server_owner server saved_server saved_id
+  local -a bus_name_args=()
 
   if mkdir -p "$notification_state_dir" 2>/dev/null &&
     exec {notification_lock_fd}>"$notification_lock_file" 2>/dev/null; then
     if flock -E 75 --wait "$notification_lock_timeout" "$notification_lock_fd" 2>/dev/null; then
-      server=$(notification_server) || server=""
+      if ! read -r server_owner server < <(notification_server); then
+        server_owner=""
+        server=""
+      fi
       # A corrupt id too long for Notify's uint32 would fail every send after it.
       if [[ -n $server && -r $notification_id_file ]] &&
         read -r saved_server saved_id <"$notification_id_file" &&
         [[ $saved_server == "$server" && $saved_id =~ ^[0-9]{1,9}$ ]]; then
         replaces_id=$saved_id
       fi
+      [[ -z $server_owner ]] || bus_name_args=(--bus-name "$server_owner")
 
-      if returned_id=$(omarchy-notification-send -u critical -g 󰌾 \
+      if returned_id=$(timeout --kill-after=0.1s 0.75s \
+        omarchy-notification-send -u critical -g 󰌾 \
+        "${bus_name_args[@]}" \
         -r "$replaces_id" -p \
         "Screen did not lock before suspend" \
         "The session was left unlocked ($1)." 2>/dev/null); then
@@ -154,23 +173,55 @@ report_unsecured() {
           fi
         fi
       fi
-    # Only a timeout means another reporter holds the lock and is sending this
-    # warning; a filesystem that cannot lock must still get one.
-    elif (( $? != 75 )); then
-      omarchy-notification-send -u critical -g 󰌾 \
+    else
+      # Do not let a stuck reporter suppress the only visible warning. This
+      # fresh send is safe to race the lock holder: the notification service
+      # collapses content-identical live critical popups across different ids.
+      # A non-timeout error also takes this path, so an unusable state lock does
+      # not suppress the warning either.
+      timeout --kill-after=0.1s 0.75s \
+        omarchy-notification-send -u critical -g 󰌾 \
         "Screen did not lock before suspend" \
         "The session was left unlocked ($1)." >/dev/null 2>&1 || true
+
     fi
     exec {notification_lock_fd}>&-
   else
     [[ -z ${notification_lock_fd:-} ]] || exec {notification_lock_fd}>&-
-    omarchy-notification-send -u critical -g 󰌾 \
+    timeout --kill-after=0.1s 0.75s \
+      omarchy-notification-send -u critical -g 󰌾 \
+      "Screen did not lock before suspend" \
+      "The session was left unlocked ($1)." >/dev/null 2>&1 || true
+  fi
+}
+
+report_unsecured() {
+  local unit
+
+  printf 'omarchy-system-sleep-lock: suspending without a secure lock (%s)\n' \
+    "$1" >&2
+
+  # Release logind's delay inhibitor immediately. The warning belongs to a
+  # separate transient user service, so a slow notification server can finish
+  # after resume without spending the reserve logind needs to suspend safely.
+  unit="omarchy-sleep-lock-warning-${BASHPID}-${EPOCHREALTIME//[!0-9]/}"
+  if ! timeout --kill-after=0.05s 0.3s systemd-run --user --quiet --collect \
+    --no-block --unit="$unit" "$0" --report-unsecured "$1" >/dev/null 2>&1; then
+    # If the user manager cannot queue the worker, retain one short best-effort
+    # send while staying within the minimum one-second logind reserve.
+    timeout --kill-after=0.05s 0.3s \
+      omarchy-notification-send -u critical -g 󰌾 \
       "Screen did not lock before suspend" \
       "The session was left unlocked ($1)." >/dev/null 2>&1 || true
   fi
 
   exit 1
 }
+
+if [[ -n $report_mode_reason ]]; then
+  report_unsecured_now "$report_mode_reason"
+  exit 0
+fi
 
 # Request the lock before touching monitor state, so a stuck Hyprland IPC call
 # cannot consume the window before Quickshell has begun securing the session.

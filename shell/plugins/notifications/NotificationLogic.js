@@ -229,7 +229,10 @@ function popupRowChanged(row, updated) {
 // is one toast, not a stack of identical ones. The image and click target
 // count too: every screen recording toast shares its text but previews and
 // opens a different file.
-var DUPLICATE_ROLES = ["app", "summary", "body", "image", "execArgv"]
+var DUPLICATE_ROLES = [
+  "app", "appIcon", "summary", "body", "image", "glyph", "execArgv",
+  "urgency", "expireTimeout"
+]
 
 function hasDuplicatePopupContent(row, snapshot) {
   if (!row || !snapshot) return false

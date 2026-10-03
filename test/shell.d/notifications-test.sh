@@ -373,6 +373,33 @@ assert(
   notifications.hasDuplicatePopupContent(heyReminder, heyReminder),
   'notifications compare duplicate content independently of server-generation ids'
 )
+assert(
+  !notifications.hasDuplicatePopupContent(
+    Object.assign({}, heyReminder, { urgency: 2, expireTimeout: 0 }),
+    Object.assign({}, heyReminder, { urgency: 0, expireTimeout: 0 })
+  ),
+  'notifications never replace a persistent critical alert with a low-urgency duplicate'
+)
+assert(
+  !notifications.hasDuplicatePopupContent(
+    Object.assign({}, heyReminder, { urgency: 1, expireTimeout: 0 }),
+    Object.assign({}, heyReminder, { urgency: 1, expireTimeout: 5000 })
+  ),
+  'notifications keep otherwise identical alerts with different expiry behavior'
+)
+const criticalLockWarning = Object.assign({}, heyReminder, {
+  appIcon: '',
+  glyph: 'lock',
+  urgency: 2,
+  expireTimeout: 0
+})
+assert(
+  notifications.isDuplicatePopup(
+    Object.assign({}, criticalLockWarning, { originalId: 40 }),
+    Object.assign({}, criticalLockWarning, { originalId: 41 })
+  ),
+  'notifications collapse identical critical warnings when holder and timeout fallback both deliver'
+)
 assertDeepEqual(
   notifications.startupRestoredDuplicatePlan(
     Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),
