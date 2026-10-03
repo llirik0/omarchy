@@ -86,6 +86,7 @@ if [[ $* == *systemd-run* ]]; then
   shift
   exec "$@"
 fi
+printf '%s\n' "$*" >>"$STATE_DIR/timeout-calls"
 exec /usr/bin/timeout "$@"
 SH
   chmod +x "$mock_bin/timeout"
@@ -328,6 +329,15 @@ pass "sleep lock warns that the session was left unlocked"
 grep -q -- '--no-block' "$state_dir/systemd-run-calls" ||
   fail "sleep lock queues warning work outside the delay inhibitor" \
     "systemd-run: $(< "$state_dir/systemd-run-calls")"
+grep -q -- '--property=RuntimeMaxSec=50s' "$state_dir/systemd-run-calls" ||
+  fail "sleep lock gives a waiting worker time to fall back before bounding its lifetime" \
+    "systemd-run: $(< "$state_dir/systemd-run-calls")"
+grep -q -- '--property=TimeoutStopSec=1s' "$state_dir/systemd-run-calls" ||
+  fail "sleep lock force-stops a wedged warning worker after its bounded fallback" \
+    "systemd-run: $(< "$state_dir/systemd-run-calls")"
+grep -q -- '--property=SendSIGKILL=yes' "$state_dir/systemd-run-calls" ||
+  fail "sleep lock permits the final kill required to release a wedged worker lock" \
+    "systemd-run: $(< "$state_dir/systemd-run-calls")"
 grep -q -- '--report-unsecured no lock screen is configured' "$state_dir/systemd-run-calls" ||
   fail "sleep lock passes the failure reason to the detached warning worker" \
     "systemd-run: $(< "$state_dir/systemd-run-calls")"
@@ -422,9 +432,8 @@ mapfile -t notifications <"$notify_log"
     "notification: ${notifications[7]}"
 pass "a corrupt saved id falls back to a fresh notification"
 
-# Concurrent failures must serialize the whole replace-id transaction. Give each
-# new notification a distinct id and delay its reply so an unlocked read/send/
-# write sequence deterministically lets both reporters send with replace id 0.
+# Concurrent failures must serialize the whole replace-id transaction even when
+# the first send outlasts the old 0.7-second lock timeout.
 setup_scenario concurrent_unsecured
 cat >"$mock_bin/omarchy-shell" <<'SH'
 #!/bin/bash
@@ -458,7 +467,7 @@ else
   [[ -r $STATE_DIR/next-id ]] && next_id=$(( $(<"$STATE_DIR/next-id") + 1 ))
   printf '%s\n' "$next_id" >"$STATE_DIR/next-id"
   rmdir "$STATE_DIR/id-allocation-lock"
-  sleep 0.5
+  sleep 1
   printf '%s\n' "$next_id"
 fi
 SH
@@ -501,9 +510,8 @@ done
   fail "concurrent warnings persist the sender's replacement id"
 pass "concurrent unsecured warnings reuse one notification"
 
-# A second reporter must take over if the lock holder fails to deliver. The
-# failed attempt never gets an id, so the successor sends the one visible card
-# and persists its id for the next suspend.
+# A second reporter waits for a failed holder and runs only after the holder's
+# bounded fresh retry. Any duplicate fallback remains content-coalescible.
 setup_scenario notification_lock_handoff
 cat >"$mock_bin/omarchy-shell" <<'SH'
 #!/bin/bash
@@ -543,22 +551,22 @@ mapfile -t notification_attempts <"$state_dir/notification-attempts"
 notification_id_file="$state_dir/omarchy/sleep-lock-notification-id"
 
 (( ${#notifications[@]} == 2 )) ||
-  fail "a failed lock holder and its timeout successor both deliver a recoverable warning" \
+  fail "a failed lock holder and its waiting successor both deliver a recoverable warning" \
     "notifications: $(< "$notify_log")"
 (( ${#notification_attempts[@]} == 3 )) ||
-  fail "the failed holder retries while the timeout successor also takes over" \
+  fail "the failed holder retries before the waiting successor takes over" \
     "attempts: $(< "$state_dir/notification-attempts")"
 [[ ${notification_attempts[0]} == failed* ]] ||
   fail "the first holder attempt fails before either fresh fallback delivers" \
     "attempts: $(< "$state_dir/notification-attempts")"
 for notification in "${notifications[@]}"; do
   [[ $notification == *"-u critical"* && $notification == *"-r 0"* ]] ||
-    fail "holder and timeout fallbacks emit equivalent fresh critical warnings" \
+    fail "holder and waiting-successor fallbacks emit equivalent fresh critical warnings" \
       "notification: $notification"
 done
-[[ ! -e $notification_id_file ]] ||
-  fail "the lock-timeout fallback does not race the holder when persisting state"
-pass "a failed holder and timeout successor deliver coalescible warnings"
+[[ -f $notification_id_file && $(< "$notification_id_file") == "test-boot-id-700-100 41" ]] ||
+  fail "the waiting successor persists state after the failed holder releases the lock"
+pass "a failed holder and waiting successor deliver coalescible warnings"
 
 # The owner can disappear after validation but before Notify. The pinned call
 # must fail closed, then retry fresh rather than hand the saved id to a new
@@ -629,6 +637,22 @@ mapfile -t notifications <"$state_dir/delivered-notifications"
 [[ ${notifications[0]} == *"-r 0"* ]] ||
   fail "the slow-send retry is a fresh warning" "notification: ${notifications[0]}"
 pass "a slow notification send still gets one fresh retry"
+
+: >"$state_dir/timeout-calls"
+export OMARCHY_NOTIFICATION_SEND_TIMEOUT=0
+run_sleep_lock 4000
+unset OMARCHY_NOTIFICATION_SEND_TIMEOUT
+validated_timeout_call=""
+while IFS= read -r timeout_call; do
+  if [[ $timeout_call == *"omarchy-notification-send"* ]]; then
+    validated_timeout_call=$timeout_call
+    break
+  fi
+done <"$state_dir/timeout-calls"
+[[ $validated_timeout_call == *" 5 omarchy-notification-send "* ]] ||
+  fail "a zero notification timeout falls back to the bounded production default" \
+    "timeout call: $validated_timeout_call"
+pass "an invalid zero notification timeout cannot make the worker unbounded"
 
 grep -qF "suspending without a secure lock" "$journal_log" ||
   fail "sleep lock records the unlocked suspend in the journal" \

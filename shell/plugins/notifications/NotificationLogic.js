@@ -239,14 +239,7 @@ function hasDuplicatePopupContent(row, snapshot) {
   if (!row || !snapshot) return false
   for (var i = 0; i < DUPLICATE_ROLES.length; i++) {
     var role = DUPLICATE_ROLES[i]
-    if ((row[role] || "") !== (snapshot[role] || "")) {
-      // Older popup files predate appIconSource. Their copied icon path is
-      // identity-neutral: the original sender path is unrecoverable, so let the
-      // remaining visible/lifecycle roles decide during this one-time migration.
-      if (role === "appIconSource" &&
-          (isLegacyPersistedAppIcon(row) || isLegacyPersistedAppIcon(snapshot))) continue
-      return false
-    }
+    if ((row[role] || "") !== (snapshot[role] || "")) return false
   }
   return true
 }
@@ -287,7 +280,7 @@ function historyEntry(value, normalUrgency) {
   var e = value || {}
   var appIconSource = e.appIconSource
   if (appIconSource === undefined || appIconSource === null)
-    appIconSource = isLegacyPersistedAppIcon(e) ? "" : (e.appIcon || "")
+    appIconSource = e.appIcon || ""
   return {
     id: e.id || 0,
     originalId: e.originalId || e.id || 0,
@@ -378,14 +371,6 @@ function localImageFile(value) {
   return s.charAt(0) === "/" ? s : ""
 }
 
-function isLegacyPersistedAppIcon(entry) {
-  var e = entry || {}
-  if (e.appIconSource) return false
-  var path = localImageFile(e.appIcon)
-  if (!path) return false
-  var suffix = "/" + imageStem(e) + "-appIcon"
-  return path.slice(-suffix.length) === suffix
-}
 
 // The entry as it should hit the disk, plus the copies that make it true.
 // File-backed images redirect to their copy under imagesDir; dead image://
