@@ -542,18 +542,93 @@ mapfile -t notifications <"$notify_log"
 mapfile -t notification_attempts <"$state_dir/notification-attempts"
 notification_id_file="$state_dir/omarchy/sleep-lock-notification-id"
 
-(( ${#notifications[@]} == 1 )) ||
-  fail "a failed lock holder leaves exactly one delivered warning" \
+(( ${#notifications[@]} == 2 )) ||
+  fail "a failed lock holder and its timeout successor both deliver a recoverable warning" \
     "notifications: $(< "$notify_log")"
-(( ${#notification_attempts[@]} == 2 )) ||
-  fail "a waiting reporter retries after the lock holder fails" \
+(( ${#notification_attempts[@]} == 3 )) ||
+  fail "the failed holder retries while the timeout successor also takes over" \
     "attempts: $(< "$state_dir/notification-attempts")"
-[[ ${notification_attempts[0]} == failed* && ${notification_attempts[1]} == delivered* ]] ||
-  fail "the successor delivers only after the lock holder fails" \
+[[ ${notification_attempts[0]} == failed* ]] ||
+  fail "the first holder attempt fails before either fresh fallback delivers" \
     "attempts: $(< "$state_dir/notification-attempts")"
+for notification in "${notifications[@]}"; do
+  [[ $notification == *"-u critical"* && $notification == *"-r 0"* ]] ||
+    fail "holder and timeout fallbacks emit equivalent fresh critical warnings" \
+      "notification: $notification"
+done
 [[ ! -e $notification_id_file ]] ||
   fail "the lock-timeout fallback does not race the holder when persisting state"
-pass "a waiting reporter takes over when the lock holder cannot deliver"
+pass "a failed holder and timeout successor deliver coalescible warnings"
+
+# The owner can disappear after validation but before Notify. The pinned call
+# must fail closed, then retry fresh rather than hand the saved id to a new
+# server or silently lose the warning.
+setup_scenario notification_owner_restart
+cat >"$mock_bin/omarchy-shell" <<'SH'
+#!/bin/bash
+[[ $* == "lock lock" ]] && printf 'missing-pam\n'
+SH
+cat >"$mock_bin/omarchy-notification-send" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STATE_DIR/notification-attempts"
+if [[ $* == *"--bus-name"* ]]; then
+  exit 1
+fi
+printf '%s\n' "$*" >>"$STATE_DIR/delivered-notifications"
+exit 0
+SH
+chmod +x "$mock_bin/omarchy-shell" "$mock_bin/omarchy-notification-send"
+mkdir -p "$state_dir/omarchy"
+printf 'test-boot-id-700-100 41\n' >"$state_dir/omarchy/sleep-lock-notification-id"
+: >"$call_log"
+
+run_sleep_lock 4000
+mapfile -t notification_attempts <"$state_dir/notification-attempts"
+mapfile -t notifications <"$state_dir/delivered-notifications"
+
+(( ${#notification_attempts[@]} == 2 && ${#notifications[@]} == 1 )) ||
+  fail "a departed pinned owner is retried with one fresh warning" \
+    "attempts: $(< "$state_dir/notification-attempts")"
+[[ ${notification_attempts[0]} == *"--bus-name :1.700"* &&
+  ${notification_attempts[0]} == *"-r 41"* ]] ||
+  fail "the first attempt remains pinned to the validated owner and id"
+[[ ${notifications[0]} != *"--bus-name"* && ${notifications[0]} == *"-r 0"* ]] ||
+  fail "the retry is fresh and cannot replace another server's notification" \
+    "notification: ${notifications[0]}"
+pass "a server restart between validation and Notify still delivers a warning"
+
+# A slow notification server may outlive one bounded attempt. Because delivery
+# runs outside logind's inhibitor, retry once fresh instead of dropping the only
+# warning when that attempt times out.
+setup_scenario notification_slow_send
+cat >"$mock_bin/omarchy-shell" <<'SH'
+#!/bin/bash
+[[ $* == "lock lock" ]] && printf 'missing-pam\n'
+SH
+cat >"$mock_bin/omarchy-notification-send" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STATE_DIR/notification-attempts"
+if mkdir "$STATE_DIR/first-notification-attempt" 2>/dev/null; then
+  sleep 1
+  exit 1
+fi
+printf '%s\n' "$*" >>"$STATE_DIR/delivered-notifications"
+exit 0
+SH
+chmod +x "$mock_bin/omarchy-shell" "$mock_bin/omarchy-notification-send"
+: >"$call_log"
+export OMARCHY_NOTIFICATION_SEND_TIMEOUT=0.2
+run_sleep_lock 4000
+unset OMARCHY_NOTIFICATION_SEND_TIMEOUT
+mapfile -t notification_attempts <"$state_dir/notification-attempts"
+mapfile -t notifications <"$state_dir/delivered-notifications"
+
+(( ${#notification_attempts[@]} == 2 && ${#notifications[@]} == 1 )) ||
+  fail "a timed-out send is retried once" \
+    "attempts: $(< "$state_dir/notification-attempts")"
+[[ ${notifications[0]} == *"-r 0"* ]] ||
+  fail "the slow-send retry is a fresh warning" "notification: ${notifications[0]}"
+pass "a slow notification send still gets one fresh retry"
 
 grep -qF "suspending without a secure lock" "$journal_log" ||
   fail "sleep lock records the unlocked suspend in the journal" \
