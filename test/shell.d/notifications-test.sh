@@ -400,6 +400,55 @@ assert(
   ),
   'notifications collapse identical critical warnings when holder and timeout fallback both deliver'
 )
+const iconReminder = notifications.snapshotOf({
+  id: 30,
+  appName: 'Chromium',
+  summary: 'Interview',
+  body: 'Today, 11:00 AM',
+  appIcon: 'file:///tmp/chromium-profile-avatar.png',
+  urgency: 1,
+  expireTimeout: 0
+}, 300)
+const restoredIconReminder = notifications.persistablePopup(iconReminder, '/state/images/').entry
+assertEqual(
+  restoredIconReminder.appIconSource,
+  iconReminder.appIcon,
+  'notifications retain the sender icon identity when persisting its saved copy'
+)
+assert(
+  notifications.hasDuplicatePopupContent(iconReminder, restoredIconReminder),
+  'notifications match a fresh file-backed icon with the restored saved copy of that icon'
+)
+assert(
+  !notifications.hasDuplicatePopupContent(
+    iconReminder,
+    Object.assign({}, restoredIconReminder, { appIconSource: 'file:///tmp/different-avatar.png' })
+  ),
+  'notifications keep otherwise identical alerts whose sender icons differ'
+)
+const legacyRestoredIconReminder = notifications.popupEntry(Object.assign({}, iconReminder, {
+  appIcon: 'file:///state/images/300-30-appIcon',
+  appIconSource: undefined
+}), 1)
+assert(
+  notifications.hasDuplicatePopupContent(iconReminder, legacyRestoredIconReminder),
+  'notifications match a legacy restored icon copy that predates source identity persistence'
+)
+assertEqual(
+  notifications.persistablePopup(legacyRestoredIconReminder, '/state/images/').entry.appIconSource,
+  '',
+  'notifications preserve the unknown legacy icon identity when a restored popup is re-persisted'
+)
+assert(
+  !notifications.hasDuplicatePopupContent(
+    iconReminder,
+    notifications.popupEntry(Object.assign({}, iconReminder, {
+      appIcon: 'different-themed-icon',
+      appIconSource: undefined
+    }), 1)
+  ),
+  'notifications do not treat an ordinary legacy icon name as an unknown saved copy'
+)
 assertDeepEqual(
   notifications.startupRestoredDuplicatePlan(
     Object.assign({}, heyReminder, { originalId: 20, timestamp: 100 }),

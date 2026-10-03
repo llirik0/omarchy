@@ -16,7 +16,9 @@ notification_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
 notification_id_file="$notification_state_dir/sleep-lock-notification-id"
 notification_lock_file="$notification_state_dir/sleep-lock-notification.lock"
 notification_lock_timeout=0.7
+notification_send_timeout=${OMARCHY_NOTIFICATION_SEND_TIMEOUT:-5}
 notification_proc_root=${OMARCHY_PROC_ROOT:-/proc}
+[[ $notification_send_timeout =~ ^[0-9]+([.][0-9]+)?$ ]] || notification_send_timeout=5
 
 # logind decides how long a delay inhibitor may hold the machine, and the
 # shipped drop-in only counts once logind has reloaded it, so ask rather than
@@ -136,6 +138,23 @@ notification_server() {
     "$(<"$notification_proc_root/sys/kernel/random/boot_id")" "$pid" "$start_time"
 }
 
+send_fresh_warning() {
+  local _
+
+  # A timeout may mean Notify reached the server but its reply did not. Retrying
+  # can therefore produce two ids, which the shell collapses by full content;
+  # losing the only warning is worse than that short-lived duplicate.
+  for _ in 1 2; do
+    if timeout --kill-after=0.1s "$notification_send_timeout" \
+      omarchy-notification-send -u critical -g 󰌾 -r 0 \
+      "Screen did not lock before suspend" \
+      "The session was left unlocked ($1)." >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # logind suspends whether or not this wait succeeded, so a failure here means
 # the machine slept with the session exposed. The notification is the only way
 # anyone finds out, and it lands on the screen they unlock into.
@@ -159,7 +178,7 @@ report_unsecured_now() {
       fi
       [[ -z $server_owner ]] || bus_name_args=(--bus-name "$server_owner")
 
-      if returned_id=$(timeout --kill-after=0.1s 0.75s \
+      if returned_id=$(timeout --kill-after=0.1s "$notification_send_timeout" \
         omarchy-notification-send -u critical -g 󰌾 \
         "${bus_name_args[@]}" \
         -r "$replaces_id" -p \
@@ -172,6 +191,11 @@ report_unsecured_now() {
             rm -f "$notification_id_tmp"
           fi
         fi
+      else
+        # The resolved owner may have exited, or Notify may have timed out.
+        # Retry fresh through the well-known name so no stale id can reach a
+        # replacement server and an unlocked suspend still gets a warning.
+        send_fresh_warning "$1" || true
       fi
     else
       # Do not let a stuck reporter suppress the only visible warning. This
@@ -179,19 +203,13 @@ report_unsecured_now() {
       # collapses content-identical live critical popups across different ids.
       # A non-timeout error also takes this path, so an unusable state lock does
       # not suppress the warning either.
-      timeout --kill-after=0.1s 0.75s \
-        omarchy-notification-send -u critical -g 󰌾 \
-        "Screen did not lock before suspend" \
-        "The session was left unlocked ($1)." >/dev/null 2>&1 || true
+      send_fresh_warning "$1" || true
 
     fi
     exec {notification_lock_fd}>&-
   else
     [[ -z ${notification_lock_fd:-} ]] || exec {notification_lock_fd}>&-
-    timeout --kill-after=0.1s 0.75s \
-      omarchy-notification-send -u critical -g 󰌾 \
-      "Screen did not lock before suspend" \
-      "The session was left unlocked ($1)." >/dev/null 2>&1 || true
+    send_fresh_warning "$1" || true
   fi
 }
 

@@ -724,6 +724,7 @@ Item {
         originalId: row.originalId,
         app: row.app,
         appIcon: row.appIcon,
+        appIconSource: row.appIconSource || row.appIcon,
         summary: row.summary,
         body: row.body,
         image: row.image,

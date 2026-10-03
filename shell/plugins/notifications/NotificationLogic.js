@@ -190,6 +190,7 @@ function snapshotOf(notification, timestamp) {
     originalId: id,
     app: n.appName || "",
     appIcon: n.appIcon || "",
+    appIconSource: n.appIcon || "",
     summary: String(n.summary || ""),
     body: n.body || "",
     image: n.image || "",
@@ -203,7 +204,7 @@ function snapshotOf(notification, timestamp) {
 
 // Everything the popup card draws, and therefore everything an in-place
 // update has to write through to the row and its file.
-var POPUP_ROLES = ["app", "appIcon", "summary", "body", "image", "glyph", "execArgv", "urgency", "expireTimeout"]
+var POPUP_ROLES = ["app", "appIcon", "appIconSource", "summary", "body", "image", "glyph", "execArgv", "urgency", "expireTimeout"]
 
 function popupRoles() {
   return POPUP_ROLES
@@ -230,7 +231,7 @@ function popupRowChanged(row, updated) {
 // count too: every screen recording toast shares its text but previews and
 // opens a different file.
 var DUPLICATE_ROLES = [
-  "app", "appIcon", "summary", "body", "image", "glyph", "execArgv",
+  "app", "appIconSource", "summary", "body", "image", "glyph", "execArgv",
   "urgency", "expireTimeout"
 ]
 
@@ -238,7 +239,14 @@ function hasDuplicatePopupContent(row, snapshot) {
   if (!row || !snapshot) return false
   for (var i = 0; i < DUPLICATE_ROLES.length; i++) {
     var role = DUPLICATE_ROLES[i]
-    if ((row[role] || "") !== (snapshot[role] || "")) return false
+    if ((row[role] || "") !== (snapshot[role] || "")) {
+      // Older popup files predate appIconSource. Their copied icon path is
+      // identity-neutral: the original sender path is unrecoverable, so let the
+      // remaining visible/lifecycle roles decide during this one-time migration.
+      if (role === "appIconSource" &&
+          (isLegacyPersistedAppIcon(row) || isLegacyPersistedAppIcon(snapshot))) continue
+      return false
+    }
   }
   return true
 }
@@ -277,11 +285,15 @@ function replacementSnapshot(notification, originalId, timestamp) {
 
 function historyEntry(value, normalUrgency) {
   var e = value || {}
+  var appIconSource = e.appIconSource
+  if (appIconSource === undefined || appIconSource === null)
+    appIconSource = isLegacyPersistedAppIcon(e) ? "" : (e.appIcon || "")
   return {
     id: e.id || 0,
     originalId: e.originalId || e.id || 0,
     app: e.app || "",
     appIcon: e.appIcon || "",
+    appIconSource: appIconSource,
     summary: e.summary || "",
     body: e.body || "",
     image: e.image || "",
@@ -366,6 +378,15 @@ function localImageFile(value) {
   return s.charAt(0) === "/" ? s : ""
 }
 
+function isLegacyPersistedAppIcon(entry) {
+  var e = entry || {}
+  if (e.appIconSource) return false
+  var path = localImageFile(e.appIcon)
+  if (!path) return false
+  var suffix = "/" + imageStem(e) + "-appIcon"
+  return path.slice(-suffix.length) === suffix
+}
+
 // The entry as it should hit the disk, plus the copies that make it true.
 // File-backed images redirect to their copy under imagesDir; dead image://
 // URLs drop to "" (the card falls back to the app icon). Already-redirected
@@ -374,6 +395,8 @@ function persistablePopup(entry, imagesDir) {
   var e = entry || {}
   var out = {}
   for (var key in e) out[key] = e[key]
+  if (out.appIconSource === undefined || out.appIconSource === null)
+    out.appIconSource = String(out.appIcon || "")
   var copies = []
   for (var i = 0; i < PERSISTED_IMAGE_ROLES.length; i++) {
     var role = PERSISTED_IMAGE_ROLES[i]
