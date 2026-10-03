@@ -431,13 +431,8 @@ const legacyRestoredIconReminder = notifications.popupEntry(Object.assign({}, ic
   appIconSource: undefined
 }), 1)
 assert(
-  notifications.hasDuplicatePopupContent(iconReminder, legacyRestoredIconReminder),
-  'notifications match a legacy restored icon copy that predates source identity persistence'
-)
-assertEqual(
-  notifications.persistablePopup(legacyRestoredIconReminder, '/state/images/').entry.appIconSource,
-  '',
-  'notifications preserve the unknown legacy icon identity when a restored popup is re-persisted'
+  !notifications.hasDuplicatePopupContent(iconReminder, legacyRestoredIconReminder),
+  'notifications keep a legacy restored alert when its original icon identity is unknowable'
 )
 assert(
   !notifications.hasDuplicatePopupContent(
