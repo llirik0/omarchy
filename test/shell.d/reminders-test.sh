@@ -63,7 +63,8 @@ chmod +x "$test_dir/bin/date" "$test_dir/bin/systemd-run"
 
 TEST_LOG="$test_dir/systemd-run.log" \
   XDG_RUNTIME_DIR="$test_dir/runtime" \
-  PATH="$test_dir/bin:$PATH" \
+  OMARCHY_PATH="$ROOT" \
+  PATH="$test_dir/bin:$ROOT/bin:$PATH" \
   bash "$ROOT/bin/omarchy-reminder" 7 "Tea ready"
 
 grep -Fxq -- '--on-calendar=2026-09-07 18:07:00 UTC' "$test_dir/systemd-run.log" ||
