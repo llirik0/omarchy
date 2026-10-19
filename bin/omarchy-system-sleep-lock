@@ -43,8 +43,10 @@ derive_budget_ms() {
 }
 
 report_mode_reason=""
+report_mode_message=""
 if [[ ${1:-} == --report-unsecured ]]; then
   report_mode_reason=${2:-unknown}
+  report_mode_message=${3:-"The session was left unlocked ($report_mode_reason)."}
   budget_ms=1
 else
   budget_ms=${1:-$(derive_budget_ms)}
@@ -147,8 +149,8 @@ send_fresh_warning() {
   for _ in 1 2; do
     if timeout --kill-after=0.1s "$notification_send_timeout" \
       omarchy-notification-send -u critical -g 󰌾 -r 0 \
-      "Screen did not lock before suspend" \
-      "The session was left unlocked ($1)." >/dev/null 2>&1; then
+      "$(omarchy-i18n lock.didNotLock)" \
+      "$2" >/dev/null 2>&1; then
       return 0
     fi
   done
@@ -185,8 +187,8 @@ report_unsecured_now() {
         omarchy-notification-send -u critical -g 󰌾 \
         "${bus_name_args[@]}" \
         -r "$replaces_id" -p \
-        "Screen did not lock before suspend" \
-        "The session was left unlocked ($1)." 2>/dev/null); then
+        "$(omarchy-i18n lock.didNotLock)" \
+        "$2" 2>/dev/null); then
         if [[ -n $server && $returned_id =~ ^[0-9]+$ ]] &&
           notification_id_tmp=$(mktemp "$notification_id_file.XXXXXX" 2>/dev/null); then
           if ! printf '%s %s\n' "$server" "$returned_id" >"$notification_id_tmp" 2>/dev/null ||
@@ -198,17 +200,17 @@ report_unsecured_now() {
         # The resolved owner may have exited, or Notify may have timed out.
         # Retry fresh through the well-known name so no stale id can reach a
         # replacement server and an unlocked suspend still gets a warning.
-        send_fresh_warning "$1" || true
+        send_fresh_warning "$1" "$2" || true
       fi
     else
       # An unusable state lock must not suppress the warning. Avoid shared
       # replacement state because it could not be protected.
-      send_fresh_warning "$1" || true
+      send_fresh_warning "$1" "$2" || true
     fi
     exec {notification_lock_fd}>&-
   else
     [[ -z ${notification_lock_fd:-} ]] || exec {notification_lock_fd}>&-
-    send_fresh_warning "$1" || true
+    send_fresh_warning "$1" "$2" || true
   fi
 }
 
@@ -229,20 +231,20 @@ report_unsecured() {
   if ! timeout --kill-after=0.05s 0.3s systemd-run --user --quiet --collect \
     --no-block --property=RuntimeMaxSec=50s --property=TimeoutStopSec=1s \
     --property=SendSIGKILL=yes --unit="$unit" \
-    "$0" --report-unsecured "$1" >/dev/null 2>&1; then
+    "$0" --report-unsecured "$1" "$2" >/dev/null 2>&1; then
     # If the user manager cannot queue the worker, retain one short best-effort
     # send while staying within the minimum one-second logind reserve.
     timeout --kill-after=0.05s 0.3s \
       omarchy-notification-send -u critical -g 󰌾 \
-      "Screen did not lock before suspend" \
-      "The session was left unlocked ($1)." >/dev/null 2>&1 || true
+      "$(omarchy-i18n lock.didNotLock)" \
+      "$2" >/dev/null 2>&1 || true
   fi
 
   exit 1
 }
 
 if [[ -n $report_mode_reason ]]; then
-  report_unsecured_now "$report_mode_reason"
+  report_unsecured_now "$report_mode_reason" "$report_mode_message"
   exit 0
 fi
 

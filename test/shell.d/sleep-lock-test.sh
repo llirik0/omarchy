@@ -35,6 +35,16 @@ setup_scenario() {
   # host's own configuration decide what these scenarios are testing.
   mock_logind_window 5000000
 
+  cat >"$mock_bin/omarchy-i18n" <<'SH'
+#!/bin/bash
+case $1 in
+  lock.didNotLock) printf '[translated] Screen did not lock before suspend\n' ;;
+  lock.unlockedNoLockScreen) printf '[translated] No lock screen\n' ;;
+  lock.unlockedTimeout) printf '[translated] Timeout %s\n' "$2" ;;
+esac
+SH
+  chmod +x "$mock_bin/omarchy-i18n"
+
   # Capture the desktop warning instead of firing a real one at whoever is
   # running the suite.
   cat >"$mock_bin/omarchy-notification-send" <<SH
@@ -209,6 +219,10 @@ done
   fail "sleep lock keeps polling until the deadline" "polls: $polls"
 pass "sleep lock keeps polling until the deadline"
 
+grep -qF '[translated] Timeout 1500' "$notify_log" ||
+  fail "a timeout warning preserves the localized budget"
+pass "a timeout warning preserves the localized budget"
+
 # A lock request that times out may never have landed, so the wait retries it
 # instead of suspending an unlocked session over one slow IPC call.
 setup_scenario retry_lock
@@ -325,6 +339,10 @@ grep -qF "did not lock before suspend" "$notify_log" ||
   fail "sleep lock warns that the session was left unlocked" \
     "notifications: $(< "$notify_log")"
 pass "sleep lock warns that the session was left unlocked"
+
+grep -qF '[translated] Screen did not lock before suspend [translated] No lock screen' "$notify_log" ||
+  fail "the detached warning preserves the localized title and reason" "notifications: $(<"$notify_log")"
+pass "the detached warning preserves the localized title and reason"
 
 grep -q -- '--no-block' "$state_dir/systemd-run-calls" ||
   fail "sleep lock queues warning work outside the delay inhibitor" \
@@ -681,6 +699,18 @@ mapfile -t notifications <"$notify_log"
   fail "a state lock that errors still sends the unsecured warning" \
     "notifications: $(< "$notify_log")"
 pass "a state lock that errors still sends the unsecured warning"
+
+grep -qF '[translated] Screen did not lock before suspend [translated] No lock screen' "$notify_log" ||
+  fail "the state-lock fallback preserves the localized warning"
+pass "the state-lock fallback preserves the localized warning"
+
+# A user-manager failure takes the direct, inhibitor-bounded fallback instead.
+printf '#!/bin/bash\nexit 1\n' >"$mock_bin/systemd-run"
+: >"$notify_log"
+run_sleep_lock 4000
+grep -qF '[translated] Screen did not lock before suspend [translated] No lock screen' "$notify_log" ||
+  fail "the worker-queue fallback preserves the localized warning"
+pass "the worker-queue fallback preserves the localized warning"
 
 # Queuing the worker, not delivering the toast, is all the delay-inhibitor path
 # waits for. A stuck notification client therefore cannot spend logind's reserve.
